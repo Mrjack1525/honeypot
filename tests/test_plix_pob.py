@@ -19,6 +19,18 @@ class TestPLIXPOB(unittest.TestCase):
         self.assertEqual(severity, "high")
         self.assertIn("Heuristic", reason)
 
+    def test_heuristic_detects_low_risk(self):
+        event = HoneypotEvent(
+            timestamp="2026-01-01T00:00:00+00:00",
+            source_ip="10.0.0.2",
+            method="GET",
+            path="/favicon.ico",
+            user_agent="Mozilla/5.0",
+            query="",
+        )
+        severity, _ = heuristic_classification(event)
+        self.assertEqual(severity, "low")
+
     def test_engine_writes_log_and_response(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "events.jsonl")

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Dict, Any, Tuple
+from pathlib import Path
+from typing import Any, Dict, Tuple
 
 
 SUSPICIOUS_PATHS = {
@@ -13,6 +14,8 @@ SUSPICIOUS_PATHS = {
     "/.env",
     "/phpmyadmin",
     "/cgi-bin/luci",
+    "/xmlrpc.php",
+    "/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php",
 }
 
 
@@ -46,19 +49,19 @@ class LlamaAnalyzer:
         try:
             from urllib.request import Request, urlopen
 
-            req = Request(
+            request = Request(
                 self.api_url,
                 method="POST",
                 data=json.dumps(payload).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
             )
-            with urlopen(req, timeout=self.timeout) as response:  # nosec B310
+
+            with urlopen(request, timeout=self.timeout) as response:  # nosec B310
                 parsed = json.loads(response.read().decode("utf-8"))
-                message = parsed.get("response", "").strip()
-                severity = _extract_severity(message)
-                if not message:
-                    message = "AI returned empty response; fallback used."
-                return severity, message
+            message = parsed.get("response", "").strip()
+            if not message:
+                return heuristic_classification(event)
+            return _extract_severity(message), message
         except Exception:
             return heuristic_classification(event)
 
@@ -74,16 +77,21 @@ def _extract_severity(message: str) -> str:
 def heuristic_classification(event: HoneypotEvent) -> Tuple[str, str]:
     score = 0
 
+    ua_lower = event.user_agent.lower()
+    path_lower = event.path.lower()
+
     if event.path in SUSPICIOUS_PATHS:
         score += 2
-    if "sqlmap" in event.user_agent.lower() or "nmap" in event.user_agent.lower():
+    if any(x in ua_lower for x in ("sqlmap", "nmap", "nikto", "masscan", "zgrab")):
         score += 2
     if event.method not in {"GET", "HEAD"}:
         score += 1
-    if ".." in event.path or "%2e%2e" in event.path.lower():
+    if ".." in event.path or "%2e%2e" in path_lower:
+        score += 2
+    if "union select" in path_lower or "cmd=" in path_lower:
         score += 2
 
-    if score >= 4:
+    if score >= 5:
         return "high", "Heuristic match: likely automated exploitation attempt."
     if score >= 2:
         return "medium", "Heuristic match: suspicious reconnaissance traffic."
@@ -91,14 +99,15 @@ def heuristic_classification(event: HoneypotEvent) -> Tuple[str, str]:
 
 
 class PLIXPOBEngine:
-    """Implements Probe, Log, Inspect, eXplain, Prioritize, Orchestrate Block."""
+    """Probe, Log, Inspect, eXplain, Prioritize, Orchestrate Block."""
 
-    def __init__(self, log_file: str = "honeypot_events.jsonl") -> None:
-        api_url = os.getenv("LLAMA_API_URL", "http://localhost:11434/api/generate")
+    def __init__(self, log_file: str = "logs/honeypot_events.jsonl") -> None:
+        api_url = os.getenv("LLAMA_API_URL", "http://ollama:11434/api/generate")
         model = os.getenv("LLAMA_MODEL", "llama3.1")
         timeout = float(os.getenv("LLAMA_TIMEOUT", "5"))
 
-        self.log_file = log_file
+        self.log_file = Path(log_file)
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         self.ai = LlamaAnalyzer(api_url=api_url, model=model, timeout=timeout)
 
     def process(self, source_ip: str, method: str, path: str, user_agent: str, query: str = "") -> Dict[str, Any]:
@@ -112,7 +121,7 @@ class PLIXPOBEngine:
         )
 
         severity, reason = self.ai.classify(event)
-        block_recommended = severity in {"high", "medium"}
+        blocked = severity in {"high", "medium"}
 
         result = {
             "plix_pob": {
@@ -120,13 +129,14 @@ class PLIXPOBEngine:
                 "log": "written",
                 "inspect": {
                     "path_flagged": event.path in SUSPICIOUS_PATHS,
-                    "ua_flagged": any(k in user_agent.lower() for k in ("sqlmap", "nmap", "nikto")),
+                    "ua_flagged": any(k in user_agent.lower() for k in ("sqlmap", "nmap", "nikto", "masscan")),
                 },
-                "explain": {"severity": severity, "reason": reason},
+                "explain": {"severity": severity, "reason": reason, "engine": "llama+heuristic"},
                 "prioritize": {"score": _severity_score(severity), "severity": severity},
                 "orchestrate_block": {
-                    "recommended": block_recommended,
-                    "ttl_seconds": 3600 if block_recommended else 0,
+                    "recommended": blocked,
+                    "ttl_seconds": 3600 if blocked else 0,
+                    "action": "temporary-block" if blocked else "observe",
                 },
             }
         }
@@ -135,8 +145,8 @@ class PLIXPOBEngine:
         return result
 
     def _write_event(self, payload: Dict[str, Any]) -> None:
-        with open(self.log_file, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        with self.log_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
 def _severity_score(severity: str) -> int:

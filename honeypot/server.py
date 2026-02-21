@@ -1,20 +1,35 @@
 from __future__ import annotations
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from honeypot.plix_pob import PLIXPOBEngine
 
 
-engine = PLIXPOBEngine()
+LOG_PATH = os.getenv("HONEYPOT_LOG_FILE", "logs/honeypot_events.jsonl")
+engine = PLIXPOBEngine(log_file=LOG_PATH)
 
 
 class HoneypotHandler(BaseHTTPRequestHandler):
     server_version = "Apache/2.4.57"
 
+    def _send_json(self, status_code: int, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle(self) -> None:
         parsed = urlparse(self.path)
+
+        if parsed.path == "/health":
+            self._send_json(200, {"status": "healthy"})
+            return
+
         result = engine.process(
             source_ip=self.client_address[0],
             method=self.command,
@@ -23,19 +38,14 @@ class HoneypotHandler(BaseHTTPRequestHandler):
             query=parsed.query,
         )
 
-        body = json.dumps(
+        self._send_json(
+            503,
             {
                 "status": "ok",
                 "message": "resource temporarily unavailable",
                 "tracking_id": result["plix_pob"]["probe"]["timestamp"],
-            }
-        ).encode("utf-8")
-
-        self.send_response(503)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            },
+        )
 
     def do_GET(self) -> None:  # noqa: N802
         self._handle()
@@ -46,12 +56,17 @@ class HoneypotHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         self._handle()
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._handle()
+
     def log_message(self, format: str, *args) -> None:  # noqa: A003
-        # Silence default console logs; events are recorded through PLIX-POB.
         return
 
 
-def run(host: str = "0.0.0.0", port: int = 8080) -> None:
+def run() -> None:
+    host = os.getenv("HONEYPOT_HOST", "0.0.0.0")
+    port = int(os.getenv("HONEYPOT_PORT", "8080"))
+
     server = ThreadingHTTPServer((host, port), HoneypotHandler)
     print(f"[honeypot] listening on http://{host}:{port}")
     server.serve_forever()

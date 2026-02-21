@@ -1,26 +1,24 @@
-# AI-Enhanced Honeypot (PLIX-POB + LLaMA)
+# AI-Enhanced Honeypot System (PLIX-POB + LLaMA)
 
-This repository contains a lightweight Python honeypot that uses a **PLIX-POB** workflow and optional **LLaMA AI** enrichment to classify suspicious behavior.
+This project provides a container-ready honeypot system that captures hostile HTTP traffic and classifies it using a **PLIX-POB** workflow with optional **LLaMA** enrichment.
 
-## What is PLIX-POB?
+## PLIX-POB workflow
 
-PLIX-POB is modeled here as a six-phase response loop:
+1. **Probe**: capture client, path, query, method, and user-agent.
+2. **Log**: persist normalized event objects in JSONL.
+3. **Inspect**: apply deterministic IOC checks (path, traversal, scanner UAs).
+4. **eXplain**: enrich event with LLaMA SOC-style reasoning when available.
+5. **Prioritize**: convert severity into a risk score.
+6. **Orchestrate Block**: emit response metadata for temporary blocking.
 
-1. **P**robe - capture incoming request details.
-2. **L**og - persist normalized events.
-3. **I**nspect - evaluate immediate indicators.
-4. e**X**plain - enrich events with AI context (LLaMA).
-5. **P**rioritize - assign threat score / severity.
-6. **O**rchestrate **B**lock - provide actionable response metadata.
+## System layout
 
-## Features
+- `honeypot/plix_pob.py` — core engine, heuristic + LLaMA analyzer.
+- `honeypot/server.py` — HTTP decoy server (`/health` + trap behavior).
+- `docker-compose.yml` — full deployment with honeypot + Ollama.
+- `Dockerfile` — production-like image for the honeypot service.
 
-- Fake endpoint surface (`/admin`, `/wp-login.php`, etc.) designed to attract scans.
-- Structured JSON event logging.
-- AI classification through a local LLaMA-compatible endpoint (defaults to Ollama).
-- Deterministic fallback classification when LLaMA is unavailable.
-
-## Quick start
+## Local run (without Docker)
 
 ```bash
 python -m venv .venv
@@ -29,20 +27,39 @@ pip install -r requirements.txt
 python -m honeypot.server
 ```
 
-The honeypot listens on `0.0.0.0:8080` by default.
+Server defaults to `0.0.0.0:8080` and writes logs to `logs/honeypot_events.jsonl`.
 
-## LLaMA integration
+## Deploy with Docker (recommended)
 
-Set environment variables if you run a local Ollama instance:
+```bash
+docker compose up --build -d
+```
 
-- `LLAMA_API_URL` (default: `http://localhost:11434/api/generate`)
-- `LLAMA_MODEL` (default: `llama3.1`)
-- `LLAMA_TIMEOUT` (default: `5` seconds)
+Then validate:
 
-When the AI endpoint is unreachable, the server still runs and uses local heuristic scoring.
+```bash
+curl -i http://localhost:8080/health
+curl -i -A "sqlmap/1.7" http://localhost:8080/wp-login.php
+```
 
-## Run tests
+Logs are persisted to `./logs/honeypot_events.jsonl` on the host.
+
+## LLaMA/Ollama configuration
+
+Environment variables:
+
+- `LLAMA_API_URL` (default `http://ollama:11434/api/generate`)
+- `LLAMA_MODEL` (default `llama3.1`)
+- `LLAMA_TIMEOUT` (default `5`)
+- `HONEYPOT_HOST` (default `0.0.0.0`)
+- `HONEYPOT_PORT` (default `8080`)
+- `HONEYPOT_LOG_FILE` (default `logs/honeypot_events.jsonl`)
+
+If LLaMA is unavailable, the engine automatically falls back to heuristic scoring.
+
+## Tests
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
+python -m py_compile honeypot/*.py tests/*.py
 ```

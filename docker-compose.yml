@@ -1,0 +1,30 @@
+services:
+  honeypot:
+    build: .
+    container_name: ai-honeypot
+    ports:
+      - "8080:8080"
+    environment:
+      HONEYPOT_HOST: 0.0.0.0
+      HONEYPOT_PORT: 8080
+      HONEYPOT_LOG_FILE: /app/logs/honeypot_events.jsonl
+      LLAMA_API_URL: http://ollama:11434/api/generate
+      LLAMA_MODEL: llama3.1
+      LLAMA_TIMEOUT: 5
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama-data:
